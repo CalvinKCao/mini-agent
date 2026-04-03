@@ -11,10 +11,10 @@
 # DRC MAPPO training on Forked Corridor (Theory-of-Mind PoC).
 # Default: L40S on Killarney.
 #
-# Usage:
-#   sbatch slurm_ma_tom.sh                          # defaults
-#   sbatch slurm_ma_tom.sh --total-timesteps 10000000  # override
-#   sbatch --account=OTHER-GROUP slurm_ma_tom.sh    # different account
+# Usage (from repo root on scratch, e.g. $SCRATCH/mini-agent):
+#   mkdir -p logs && sbatch slurm_ma_tom.sh
+#   sbatch slurm_ma_tom.sh --total-timesteps 10000000
+#   sbatch --account=OTHER-GROUP slurm_ma_tom.sh
 #
 # For H100 (large runs only):
 #   sbatch --partition=gpubase_h100_b4 --gpus-per-node=h100:1 \
@@ -23,12 +23,31 @@
 set -euo pipefail
 
 # ── resolve project root ─────────────────────────────────────────────
-if [ -d "$SCRATCH/overcooked" ]; then
-    PROJECT_ROOT="$SCRATCH/overcooked"
-elif [ -d "$HOME/overcooked" ]; then
-    PROJECT_ROOT="$HOME/overcooked"
-else
-    echo "ERROR: clone the repo to \$SCRATCH/overcooked first"
+# Prefer the directory you submitted from (sbatch from repo root → works).
+# Otherwise try common clone locations (GitHub repo name is mini-agent).
+_resolve_root() {
+    local d
+    for d in \
+        "${SLURM_SUBMIT_DIR:-}" \
+        "${SCRATCH:-}/mini-agent" \
+        "${SCRATCH:-}/overcooked" \
+        "${HOME}/mini-agent" \
+        "${HOME}/overcooked"
+    do
+        [ -z "$d" ] && continue
+        d=$(readlink -f "$d" 2>/dev/null) || continue
+        if [ -f "$d/train_v2.py" ]; then
+            echo "$d"
+            return 0
+        fi
+    done
+    return 1
+}
+
+if ! PROJECT_ROOT=$(_resolve_root); then
+    echo "ERROR: could not find repo root (need train_v2.py)."
+    echo "  Clone to e.g. \$SCRATCH/mini-agent, then:"
+    echo "    cd \$SCRATCH/mini-agent && mkdir -p logs && sbatch slurm_ma_tom.sh"
     exit 1
 fi
 
@@ -47,7 +66,8 @@ if [ -z "${PROJECT:-}" ] && [ -d "$HOME/projects" ]; then
     [ -n "$FIRST_PROJ" ] && export PROJECT=$(readlink -f "$FIRST_PROJ")
 fi
 
-VENV_DIR="${PROJECT:=$HOME}/${USER}/overcooked/venv"
+# venv next to the checkout (same layout as local .venv)
+VENV_DIR="${PROJECT_ROOT}/.venv"
 
 if [ ! -d "$VENV_DIR" ]; then
     echo "Creating venv at $VENV_DIR ..."
