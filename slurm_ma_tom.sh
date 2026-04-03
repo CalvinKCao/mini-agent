@@ -54,7 +54,7 @@ fi
 mkdir -p "$PROJECT_ROOT/logs"
 
 # ── modules ──────────────────────────────────────────────────────────
-module purge
+module purge || true
 module load StdEnv/2023
 module load python/3.11
 module load cuda/12.2
@@ -82,7 +82,15 @@ fi
 
 cd "$PROJECT_ROOT"
 
+# W&B files land here (not under logs/). Override if you want e.g. $SLURM_TMPDIR.
+export WANDB_DIR="${PROJECT_ROOT}/wandb"
+mkdir -p "$WANDB_DIR"
+
 # ── run ──────────────────────────────────────────────────────────────
+echo "PROJECT_ROOT=$PROJECT_ROOT"
+echo "WANDB_DIR=$WANDB_DIR"
+echo "PWD=$(pwd)"
+echo "SLURM_SUBMIT_DIR=${SLURM_SUBMIT_DIR:-}"
 echo "Job $SLURM_JOB_ID  node=$(hostname)  gpu=$CUDA_VISIBLE_DEVICES"
 echo "Python: $(which python)  Torch: $(python -c 'import torch;print(torch.__version__)')"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader

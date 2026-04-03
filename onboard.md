@@ -9,8 +9,9 @@ PoC: mechanistic evidence of emergent Theory of Mind in model-free RL (inspired 
 ├── models_drc.py       # DRC(3,3) ConvLSTM actor-critic (pool-and-inject, skips)
 ├── train_v1.py         # V1: CNN ActorCritic + MAPPO baseline
 ├── train_v2.py         # V2: DRC MAPPO with sequence-level BPTT
+├── interpretability.py # V3: sklearn probe + inception-style c^D injection
 ├── slurm_ma_tom.sh     # Slurm job script for L40S on Alliance Canada
-├── requirements.txt    # torch, numpy, wandb
+├── requirements.txt    # torch, numpy, wandb, scikit-learn
 ├── onboard.md          # this file
 ├── arch.md             # architecture snapshot
 ├── arch_log.md         # append-only arch changelog
@@ -19,10 +20,6 @@ PoC: mechanistic evidence of emergent Theory of Mind in model-free RL (inspired 
 └── checkpoints/        # saved model weights
 ```
 
-## Planned (V3)
-
-- `interpretability.py` — linear probes on DRC cell states to decode partner goal, causal intervention ("inception test")
-
 ## Key design choices
 
 - Grid: wide shared corridor (rows 3-5), bottlenecks at (2,2)/(2,4), goals at (1,1)/(1,5).
@@ -30,6 +27,7 @@ PoC: mechanistic evidence of emergent Theory of Mind in model-free RL (inspired 
 - Reached-goal agents are removed from physics (no blocking, hidden from partner obs).
 - Parameter-shared MAPPO for both V1 (stateless CNN) and V2 (recurrent DRC).
 - V2 PPO update: sequence-level mini-batching with full BPTT over rollout length.
+- V3: linear probe on layer-3 **cell** `c^D`; intervention adds scaled `coef_` to A's `c^D` input.
 - wandb project: `forked-corridor-tom`.
 
 ## Cluster

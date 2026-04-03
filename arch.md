@@ -59,3 +59,11 @@ env.step(actions) → (obs, goal_vec, rewards, dones, infos) → wandb
               ↓ (reset h,c where done)
   next iteration
 ```
+
+## V3 (`interpretability.py`)
+
+- Default checkpoint `checkpoints/v2_final.pt`.
+- Rollouts with greedy policy; at `--probe-step` (default 2), take **flattened layer-3 cell** `new_c[D-1]` for agent A after `forward_logits`.
+- `sklearn` logistic regression: target = partner Left (1) vs Right (0); test **macro F1**.
+- **Inception test:** `W_L = coef_.ravel()`; episode with partner R; at same step, `forward_logits` twice from identical `(h,c)` with `inject_cell_top` zero except `inject[0] += scale * reshape(W_L)` on `c[D-1]` before core; log KL / L1 between agent-A action distributions.
+- `models_drc.forward_logits` and optional `inject_cell_top` on forward paths add perturbation to `c[D-1]` before `_core`.

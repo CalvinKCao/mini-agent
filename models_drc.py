@@ -91,7 +91,7 @@ class DRCActorCritic(nn.Module):
 
     # ----- core -----------------------------------------------------------
     def _core(self, i_t, h, c):
-        """Run D layers × N ticks.  Returns (feat, new_h, new_c)."""
+        """Run D layers × N ticks.  Returns (hs, cs) lists per layer."""
         hs = [h[d] for d in range(self.D)]
         cs = [c[d] for d in range(self.D)]
 
@@ -109,12 +109,17 @@ class DRCActorCritic(nn.Module):
         return self.trunk(torch.cat([out, goal], dim=1))
 
     # ----- public API -----------------------------------------------------
-    def forward(self, obs, goal, h, c, action=None):
+    def forward(self, obs, goal, h, c, action=None, inject_cell_top=None):
         """Full forward: encode → DRC ticks → policy + value.
+
+        inject_cell_top: optional, added to c[D-1] before core (B,G,H,W).
 
         Returns (action, logprob, entropy, value, new_h, new_c).
         """
         i_t = torch.relu(self.encoder(obs))
+        if inject_cell_top is not None:
+            c = c.clone()
+            c[-1] = c[-1] + inject_cell_top
         hs, cs = self._core(i_t, h, c)
 
         feat = self._head_features(hs, i_t, goal)
@@ -129,11 +134,28 @@ class DRCActorCritic(nn.Module):
         new_c = torch.stack(cs)
         return action, dist.log_prob(action), dist.entropy(), value, new_h, new_c
 
-    def get_value(self, obs, goal, h, c):
+    def get_value(self, obs, goal, h, c, inject_cell_top=None):
         """Value-only pass (skips policy head). Returns (value, new_h, new_c)."""
         i_t = torch.relu(self.encoder(obs))
+        if inject_cell_top is not None:
+            c = c.clone()
+            c[-1] = c[-1] + inject_cell_top
         hs, cs = self._core(i_t, h, c)
         feat = self._head_features(hs, i_t, goal)
         new_h = torch.stack(hs)
         new_c = torch.stack(cs)
         return self.val_head(feat).squeeze(-1), new_h, new_c
+
+    def forward_logits(self, obs, goal, h, c, inject_cell_top=None):
+        """Policy logits + value + new states (no sampling). For eval / probes."""
+        i_t = torch.relu(self.encoder(obs))
+        if inject_cell_top is not None:
+            c = c.clone()
+            c[-1] = c[-1] + inject_cell_top
+        hs, cs = self._core(i_t, h, c)
+        feat = self._head_features(hs, i_t, goal)
+        logits = self.pi_head(feat)
+        value = self.val_head(feat).squeeze(-1)
+        new_h = torch.stack(hs)
+        new_c = torch.stack(cs)
+        return logits, value, new_h, new_c

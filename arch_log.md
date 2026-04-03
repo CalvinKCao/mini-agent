@@ -14,3 +14,9 @@
 - `train_v2.py`: recurrent MAPPO — hidden state management across timesteps, sequence-level mini-batching with full BPTT, mask-based done resets for autograd compatibility
 - `slurm_ma_tom.sh`: Slurm job script for L40S on Killarney (Alliance Canada), auto-creates venv under $PROJECT/$USER
 - Weight decay applied only to policy/value heads (per paper E.4)
+
+## 2025-04-02 — V3 interpretability
+
+- `interpretability.py`: default ckpt `checkpoints/v2_final.pt`; record flattened top-layer **cell** state; logistic regression probe (macro F1); causal test via `inject_cell_top` on `c[D-1]` for agent A
+- `models_drc.py`: `forward_logits`; optional `inject_cell_top` on `forward` / `get_value` / `forward_logits` (adds to `c[D-1]` before core)
+- `requirements.txt`: `scikit-learn`
