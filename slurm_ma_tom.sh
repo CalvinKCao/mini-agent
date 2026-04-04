@@ -4,7 +4,7 @@
 #SBATCH --gres=gpu:l40s:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=50G
-#SBATCH --time=0-06:00:00
+#SBATCH --time=0-02:00:00
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 #
@@ -60,10 +60,16 @@ module load python/3.11
 module load cuda/12.2
 module load cudnn/8.9
 
-# ── venv (under $PROJECT/$USER to keep $SCRATCH clean) ───────────────
+# ── optional $PROJECT (venv path hint only; venv lives in repo .venv) ──
+# NOTE: do not use `ls def-* | head` under `set -o pipefail` — unmatched globs
+# make ls exit 2 and kill the whole batch script in ~3s.
 if [ -z "${PROJECT:-}" ] && [ -d "$HOME/projects" ]; then
-    FIRST_PROJ=$(ls -d "$HOME"/projects/def-* "$HOME"/projects/aip-* 2>/dev/null | head -1)
-    [ -n "$FIRST_PROJ" ] && export PROJECT=$(readlink -f "$FIRST_PROJ")
+    shopt -s nullglob
+    _proj_matches=("$HOME"/projects/def-* "$HOME"/projects/aip-*)
+    shopt -u nullglob
+    if [ "${#_proj_matches[@]}" -gt 0 ]; then
+        export PROJECT=$(readlink -f "${_proj_matches[0]}")
+    fi
 fi
 
 # venv next to the checkout (same layout as local .venv)

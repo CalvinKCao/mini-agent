@@ -1,0 +1,25 @@
+{
+    "api": "https://docs.alliancecan.ca/mediawiki/api.php",
+    "api_chunksize": 50,
+    "curonly": true,
+    "date": "20260325",
+    "delay": 1.5,
+    "exnamespaces": [],
+    "export": "",
+    "failfast": false,
+    "http_method": "POST",
+    "images": false,
+    "index": "https://docs.alliancecan.ca/mediawiki/index.php",
+    "logs": false,
+    "namespaces": [
+        "all"
+    ],
+    "path": "docs.alliancecan.ca_mediawiki-20260319-wikidump",
+    "redirects": false,
+    "retries": 5,
+    "templates": false,
+    "xml": true,
+    "xmlapiexport": false,
+    "xmlrevisions": false,
+    "xmlrevisions_page": false
+}
