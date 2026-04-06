@@ -23,3 +23,19 @@
 - `compile_safe.py`: skip `torch.compile` when Triton missing / compile fails (avoids `TritonMissing` on Alliance GPU nodes); Slurm venv bootstrap installs `triton` when absent
 - `hpc_job_env.sh`: shared Slurm bootstrap (resolve `PROJECT_ROOT`, modules, `.venv`); sourced by `slurm_ma_tom.sh` and `slurm_smoke.sh`
 - `smoke_setup.py` + `slurm_smoke.sh`: quick import/env/GPU/DRC checks before long queues
+
+## 2026-04-06 — V3 upgrade: three-corridor environment + high-rigour interpretability
+
+### Environment
+- `env.py`: added `ThreeCorridorVec` — 9×7 grid, three bottlenecks (L/C/R), goals at (1,1)/(1,4)/(1,7); `corridor_committed` per agent; richer `infos` dict (partner_intent, chosen_corridor_a/b, corridor_match); `mask_partner_obs` flag for ablation; `scripted_actions_vec()` deterministic partner
+- `ForkedCorridorVec` kept as-is for V1/V2 backward compat
+
+### Model
+- `models_drc.py`: no architecture change; H/W already parameterized; used with H=7, W=9, goal_dim=3
+
+### Training
+- `train.py` (new): DRC MAPPO for ThreeCorridorVec; 9×7 obs, 3-class goal; corridor-choice frequency logging; `--eval-only --traces-out` mode for pre-computing rollout traces
+- `compile_safe.py` (new standalone): torch.compile wrapper, factored out of train scripts
+
+### Interpretability
+- `interpretability.py` (full rewrite): 3-class probe (L/C/R) on c^D; confusion matrix; partner-visibility ablation (masked partner channel); shuffled-label negative control; corridor-specific causal interventions (inject W_k, measure corridor choice Δ vs base and vs random-vector control); time-of-emergence analysis (probe at steps 0–5); held-out generalization split

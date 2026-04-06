@@ -1,17 +1,20 @@
-"""torch.compile only when Inductor can use Triton; else return eager model (HPC-safe)."""
-
+"""torch.compile wrapper with graceful fallback."""
 import torch
 
 
-def maybe_compile(model, *, device, enabled: bool, mode: str = "default"):
-    """Returns (model, status) where status is logged to wandb."""
-    if not enabled or getattr(device, "type", str(device)) != "cuda":
+def maybe_compile(model, device, enabled=True, mode="default"):
+    """Try torch.compile; fall back to eager if unavailable or compile fails.
+
+    Returns (model, status_str) where status_str is one of:
+      'on_<mode>'  — compiled successfully
+      'off'        — compile disabled or not on CUDA
+      'error'      — compile failed, using eager
+    """
+    dev_type = device.type if hasattr(device, "type") else str(device)
+    if not enabled or dev_type != "cuda":
         return model, "off"
     try:
-        import triton  # noqa: F401 — GPU inductor kernels need it
-    except ImportError:
-        return model, "skipped_no_triton"
-    try:
-        return torch.compile(model, mode=mode), f"on_{mode}"
+        compiled = torch.compile(model, mode=mode)
+        return compiled, f"on_{mode}"
     except Exception:
-        return model, "skipped_compile_error"
+        return model, "error"
