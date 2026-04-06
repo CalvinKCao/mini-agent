@@ -22,9 +22,14 @@
 
 set -euo pipefail
 
-SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+_env_sh="${SLURM_SUBMIT_DIR:-}/hpc_job_env.sh"
+if [ ! -f "$_env_sh" ]; then
+    echo "ERROR: hpc_job_env.sh not found at $_env_sh"
+    echo "  Submit from the repo root: cd \$SCRATCH/mini-agent && sbatch slurm_smoke.sh"
+    exit 1
+fi
 # shellcheck source=/dev/null
-source "$SCRIPT_DIR/hpc_job_env.sh"
+source "$_env_sh"
 
 export WANDB_MODE="${WANDB_MODE:-offline}"
 

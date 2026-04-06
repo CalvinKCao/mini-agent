@@ -25,9 +25,16 @@
 
 set -euo pipefail
 
-SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# Slurm copies the script to a spool dir, so BASH_SOURCE[0] is wrong.
+# SLURM_SUBMIT_DIR is the directory where sbatch was called — use that.
+_env_sh="${SLURM_SUBMIT_DIR:-}/hpc_job_env.sh"
+if [ ! -f "$_env_sh" ]; then
+    echo "ERROR: hpc_job_env.sh not found at $_env_sh"
+    echo "  Submit from the repo root: cd \$SCRATCH/mini-agent && sbatch slurm_ma_tom.sh"
+    exit 1
+fi
 # shellcheck source=/dev/null
-source "$SCRIPT_DIR/hpc_job_env.sh"
+source "$_env_sh"
 
 # W&B files land here (not under logs/). Override if you want e.g. $SLURM_TMPDIR.
 export WANDB_DIR="${PROJECT_ROOT}/wandb"
