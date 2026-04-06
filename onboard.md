@@ -11,6 +11,10 @@ PoC: mechanistic evidence of emergent Theory of Mind in model-free RL (inspired 
 ├── train_v2.py         # V2: DRC MAPPO with sequence-level BPTT
 ├── interpretability.py # V3: sklearn probe + inception-style c^D injection
 ├── slurm_ma_tom.sh     # Slurm job script for L40S on Alliance Canada
+├── slurm_smoke.sh      # Short Slurm job: modules + venv + smoke_setup.py --gpu (~15m wall)
+├── smoke_setup.py      # Import / env / optional GPU + compile checks (see docstring)
+├── hpc_job_env.sh      # Sourced by Slurm scripts: repo root, modules, .venv
+├── compile_safe.py     # torch.compile only if Triton available
 ├── requirements.txt    # torch, numpy, wandb, scikit-learn
 ├── onboard.md          # this file
 ├── arch.md             # architecture snapshot
@@ -33,5 +37,6 @@ PoC: mechanistic evidence of emergent Theory of Mind in model-free RL (inspired 
 ## Cluster
 
 - Default GPU: L40S on Killarney (`slurm_ma_tom.sh`)
-- Clone to `$SCRATCH/overcooked`, venv under `$PROJECT/$USER/overcooked/venv`
-- `sbatch slurm_ma_tom.sh` (or override with `"$@"` args)
+- Clone to `$SCRATCH/mini-agent` (or `overcooked`); venv is **`$PROJECT_ROOT/.venv`** (see `hpc_job_env.sh`).
+- **Smoke before long jobs:** `sbatch slurm_smoke.sh` (15m wall, same stack as training) or on login: `source .venv/bin/activate && python smoke_setup.py` (CPU only; no GPU test).
+- `sbatch slurm_ma_tom.sh` (or pass extra args after script name)

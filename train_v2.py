@@ -16,6 +16,7 @@ import torch.nn as nn
 from torch.distributions import Categorical
 
 import wandb
+from compile_safe import maybe_compile
 from env import ForkedCorridorVec
 from models_drc import DRCActorCritic
 
@@ -83,8 +84,12 @@ def main():
         obs_ch=3, goal_dim=2,
         G=args.drc_channels, D=args.drc_depth, N=args.drc_ticks,
     ).to(device)
-    if args.compile and device.type == "cuda":
-        model = torch.compile(model, mode="default")
+    model, compile_status = maybe_compile(
+        model, device=device, enabled=args.compile, mode="default",
+    )
+    if compile_status != "on_default":
+        print(f"train_v2: torch.compile → {compile_status} (eager mode)")
+    wandb.config.update({"torch_compile_status": compile_status}, allow_val_change=True)
 
     # weight decay only on policy/value heads (per paper E.4)
     head_params = set()

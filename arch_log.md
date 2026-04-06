@@ -20,3 +20,6 @@
 - `interpretability.py`: default ckpt `checkpoints/v2_final.pt`; record flattened top-layer **cell** state; logistic regression probe (macro F1); causal test via `inject_cell_top` on `c[D-1]` for agent A
 - `models_drc.py`: `forward_logits`; optional `inject_cell_top` on `forward` / `get_value` / `forward_logits` (adds to `c[D-1]` before core)
 - `requirements.txt`: `scikit-learn`
+- `compile_safe.py`: skip `torch.compile` when Triton missing / compile fails (avoids `TritonMissing` on Alliance GPU nodes); Slurm venv bootstrap installs `triton` when absent
+- `hpc_job_env.sh`: shared Slurm bootstrap (resolve `PROJECT_ROOT`, modules, `.venv`); sourced by `slurm_ma_tom.sh` and `slurm_smoke.sh`
+- `smoke_setup.py` + `slurm_smoke.sh`: quick import/env/GPU/DRC checks before long queues

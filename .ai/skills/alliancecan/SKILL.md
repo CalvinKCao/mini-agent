@@ -173,6 +173,7 @@ When editing Slurm scripts that use **`set -e`**, always treat **`module purge`*
 
 ## Gotchas (see also project `onboard.md` and `.ai/cluster-paths.md`)
 
+- **`ls ~/projects/def-*` under `set -euo pipefail` (silent job death):** If **`~/projects` exists** but **no** `def-*` / `aip-*` match, **`ls` exits 2**. With **`pipefail`**, the pipeline fails → **`set -e` aborts the batch** in seconds. **`sacct`:** `FAILED`, **`ExitCode=2:0`**. **Fix:** `shopt -s nullglob` + array (see **Resolving `$PROJECT`**), never `ls … | head` on those globs.
 - **Empty/broken venv on cluster:** If jobs fail with missing `torch`, recreate or repair **`$PROJECT/$USER/.../venv`** (or delete and let the Slurm script reinstall).
 - **Imports:** Run Python as **`python -m package.module`** from the repo root.
 - **Slurm output buffering** can make logs look “stuck”; use unbuffered Python or interactive `salloc` to debug.

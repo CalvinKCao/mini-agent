@@ -14,6 +14,7 @@ import torch.nn as nn
 from torch.distributions import Categorical
 
 import wandb
+from compile_safe import maybe_compile
 from env import ForkedCorridorVec
 
 # ── args ──────────────────────────────────────────────────────────────
@@ -111,8 +112,12 @@ def main():
     )
 
     model = ActorCritic().to(device)
-    if args.compile and device.type == "cuda":
-        model = torch.compile(model, mode="reduce-overhead")
+    model, compile_status = maybe_compile(
+        model, device=device, enabled=args.compile, mode="reduce-overhead",
+    )
+    if compile_status != "on_reduce-overhead":
+        print(f"train_v1: torch.compile → {compile_status} (eager mode)")
+    wandb.config.update({"torch_compile_status": compile_status}, allow_val_change=True)
     optimizer = torch.optim.Adam(
         model.parameters(), lr=args.lr, weight_decay=args.weight_decay,
     )
