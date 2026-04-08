@@ -58,6 +58,10 @@ else
         echo "Installing triton (optional, for torch.compile) ..."
         pip install triton -q || true
     fi
+    if ! python -c "import sklearn" 2>/dev/null; then
+        echo "Installing scikit-learn ..."
+        pip install scikit-learn -q
+    fi
 fi
 
 cd "$PROJECT_ROOT" || exit 1
