@@ -74,5 +74,16 @@ else:
 print("\n=== ALL CHECKS PASSED ===")
 EOF
 
+echo ""
+echo "--- interpretability end-to-end smoke (catches shape/import bugs) ---"
+WANDB_MODE=offline PYTHONUNBUFFERED=1 python -u interpretability.py \
+    --checkpoint          checkpoints/v3_final.pt \
+    --num-rollouts        8 \
+    --n-intervention-trials 3 \
+    --probe-step          1 \
+    --max-steps           5 \
+    --device              cuda \
+    --run-name            "smoke-${SLURM_JOB_ID:-local}"
+
 date
-echo "Smoke test complete."
+echo "=== SMOKE COMPLETE ==="

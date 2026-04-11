@@ -101,6 +101,9 @@ def collect_rollouts(
     # primary probe step must be reached; others are best-effort (for emergence)
     primary_step = min(probe_steps)
 
+    # per-step intent lists — cells[s] and step_intents[s] are always the same length
+    step_intents = {s: [] for s in probe_steps}
+
     while n_done < n_rollouts and tries < max_tries:
         tries += 1
         env.rng = np.random.default_rng(int(rng.integers(1 << 30)))
@@ -134,13 +137,13 @@ def collect_rollouts(
                 cb = int(info["chosen_corridor_b"][0])
                 break
 
-        # require only that the primary (smallest) probe step was reached
         if primary_step not in ep_cells:
             continue
 
         for s in probe_steps:
             if s in ep_cells:
                 cells[s].append(ep_cells[s])
+                step_intents[s].append(intent)   # kept in sync with cells[s]
                 hs_at_probe[s].append(ep_hs[s])
                 cs_at_probe[s].append(ep_cs[s])
                 obs_at_probe[s].append(ep_obs[s])
@@ -150,19 +153,16 @@ def collect_rollouts(
         corridors_b.append(cb)
         n_done += 1
 
+    feat_dim = model.G * GRID_H * GRID_W
     for s in probe_steps:
-        if cells[s]:
-            feat_dim = cells[s][0].shape[0]
-            cells[s] = np.stack(cells[s])
-        else:
-            feat_dim = model.G * GRID_H * GRID_W
-            cells[s] = np.zeros((0, feat_dim))
-    intents    = np.array(intents,    dtype=np.int32)
+        cells[s]        = np.stack(cells[s]) if cells[s] else np.zeros((0, feat_dim))
+        step_intents[s] = np.array(step_intents[s], dtype=np.int32)
+    intents     = np.array(intents,     dtype=np.int32)
     corridors_a = np.array(corridors_a, dtype=np.int32)
     corridors_b = np.array(corridors_b, dtype=np.int32)
 
-    return     cells, intents, corridors_a, corridors_b, hs_at_probe, cs_at_probe, \
-           obs_at_probe, goa_at_probe, model.G
+    return cells, step_intents, intents, corridors_a, corridors_b, \
+           hs_at_probe, cs_at_probe, obs_at_probe, goa_at_probe, model.G
 
 
 def _probe(X, y, seed=0):
@@ -223,7 +223,7 @@ def run_ablation(model, device, n_rollouts, max_steps, probe_step, seed, log_ste
 
     Expected: F1 drops materially vs full observation.
     """
-    cells_m, intents_m, _, _, _, _, _, _, _ = collect_rollouts(
+    cells_m, _si_m, intents_m, _, _, _, _, _, _, _ = collect_rollouts(
         model, device, n_rollouts, max_steps, [probe_step],
         mask_partner=True, seed=seed + 1000,
     )
@@ -268,18 +268,18 @@ def run_neg_control(cells, intents, probe_step, n_shuffles=5, seed=0, log_step=N
 
 
 # ── D. Corridor-specific causal interventions ──────────────────────────
-def _run_episode_with_injection(model, device, obs0, goal0, h0, c0,
-                                 inject_arr, max_steps, inject_step,
-                                 G, env_state_seed, env):
-    """Re-run one episode from the start; at inject_step inject into c^D.
+def _run_episode_with_injection(model, device, inject_arr, max_steps,
+                                 inject_step, G, env_state_seed, env):
+    """Re-run one episode from scratch; at inject_step add inject_arr to c^D.
 
-    Returns (corridor_committed_a, action_dist_change_l1)
+    Uses stochastic action sampling so logit shifts from the injection show
+    up in the corridor-choice distribution over many trials.
+
+    Returns corridor_committed for agent A (-1 if episode ended uncommitted).
     """
     env.rng = np.random.default_rng(env_state_seed)
     obs_np, goal_np = env.reset()
     h, c = model.initial_state(2, device=device)
-
-    p0_saved = None
     corridor_a = -1
 
     for s in range(max_steps + 1):
@@ -293,10 +293,9 @@ def _run_episode_with_injection(model, device, obs0, goal0, h0, c0,
         with torch.no_grad():
             logits, _, h, c = model.forward_logits(obs_t, goal_t, h, c,
                                                     inject_cell_top=inject)
-        if s == inject_step:
-            p0_saved = F.softmax(logits[0], dim=-1).cpu()
 
-        acts = logits.argmax(-1).cpu().numpy()
+        # stochastic sampling — lets logit shifts show up in the distribution
+        acts = torch.distributions.Categorical(logits=logits).sample().cpu().numpy()
         obs_np, goal_np, _, done, info = env.step(acts.reshape(1, 2))
         if done[0]:
             corridor_a = int(info["chosen_corridor_a"][0])
@@ -304,12 +303,13 @@ def _run_episode_with_injection(model, device, obs0, goal0, h0, c0,
 
     if corridor_a == -1:
         corridor_a = int(env.corridor_committed[0, 0])
-    return corridor_a, p0_saved
+    return corridor_a
 
 
 def run_interventions(
     model, device, G,
     clf,                         # fitted probe
+    cells,                       # dict {step: (N, feat)} — used for adaptive scaling
     probe_step,
     n_trials=100,
     scale=1.0,
@@ -317,62 +317,73 @@ def run_interventions(
     seed=42,
     log_step=None,
 ):
-    """For each corridor k: inject W_k, measure A's corridor choice.
+    """For each corridor k: inject W_k, measure A's corridor choice (stochastic policy).
 
     Tests:
       1. Targeted injection (W_k per class) → P(A→k) should rise
       2. Random injection of same norm      → should not rise (neg control)
+
+    Injection scale is set adaptively: W_k is rescaled so its spatial norm
+    matches the mean cell-state norm × user scale, making the perturbation
+    comparable in magnitude to the hidden state.
     """
     rng = np.random.default_rng(seed)
     env = ThreeCorridorVec(num_envs=1, max_steps=max_steps, seed=seed + 5000)
 
-    # concept vectors: coef_[k] has shape (G*H*W,) in OvR
-    W = clf.coef_.astype(np.float32)    # (N_CORRIDORS, feat_dim)
-    W_norms = np.linalg.norm(W, axis=1, keepdims=True) + 1e-9
+    # concept vectors: coef_[k] is (feat_dim,) in OvR logistic regression
+    W = clf.coef_.astype(np.float32)         # (N_CORRIDORS, feat_dim)
+    W_norms = np.linalg.norm(W, axis=1) + 1e-9  # (N_CORRIDORS,)
 
-    print(f"\n[INTERVENTION @ step {probe_step}]  inject_scale={scale}")
+    # adaptive base: mean ||c^D|| over collected rollouts at probe_step
+    X = cells.get(probe_step, np.zeros((0, G * GRID_H * GRID_W)))
+    if len(X) > 0:
+        mean_c_norm = float(np.linalg.norm(X, axis=1).mean())
+    else:
+        mean_c_norm = 1.0
+    print(f"\n[INTERVENTION @ step {probe_step}]  "
+          f"inject_scale={scale}  mean_c_norm={mean_c_norm:.3f}  "
+          f"||W_k|| (raw) ≈ {W_norms.mean():.4f}")
+
     table_rows = []
 
     for k_tgt in range(N_CORRIDORS):
-        W_k = (W[k_tgt] / W_norms[k_tgt]) * scale   # unit-normed × scale
+        # scale W_k so it has the same norm as the mean cell state × user scale
+        W_k = (W[k_tgt] / W_norms[k_tgt]) * mean_c_norm * scale
         W_inject = np.zeros((2, G, GRID_H, GRID_W), dtype=np.float32)
         W_inject[0] = W_k.reshape(G, GRID_H, GRID_W)
 
-        # random vector of same norm as W_inject[0] (neg control)
+        # random control: same norm, random direction
         rnd = rng.standard_normal(W_inject[0].shape).astype(np.float32)
-        rnd /= (np.linalg.norm(rnd) + 1e-9) / (np.linalg.norm(W_inject[0]) + 1e-9)
+        rnd *= np.linalg.norm(W_inject[0]) / (np.linalg.norm(rnd) + 1e-9)
         W_rand = np.zeros_like(W_inject)
         W_rand[0] = rnd
 
-        counts_tgt  = np.zeros(N_CORRIDORS + 1, dtype=np.int32)   # idx 0-2 + -1
+        counts_tgt  = np.zeros(N_CORRIDORS + 1, dtype=np.int32)  # idx 0-2 + -1 slot
         counts_base = np.zeros(N_CORRIDORS + 1, dtype=np.int32)
         counts_rand = np.zeros(N_CORRIDORS + 1, dtype=np.int32)
         n_valid = 0
 
-        for trial in range(n_trials * 3):
+        for _trial in range(n_trials * 4):
             if n_valid >= n_trials:
                 break
             ep_seed = int(rng.integers(1 << 30))
             env.rng = np.random.default_rng(ep_seed)
             obs_np, goal_np = env.reset()
-            # only keep rollouts where B's intent ≠ k_tgt (so injection is "counterfactual")
+            # counterfactual condition: B's true intent ≠ injected intent
             if int(env.goals[0, 1]) == k_tgt:
                 continue
 
-            ca_tgt,  _ = _run_episode_with_injection(
-                model, device, None, None, None, None,
-                W_inject, max_steps, probe_step, G, ep_seed, env,
+            ca_tgt  = _run_episode_with_injection(
+                model, device, W_inject, max_steps, probe_step, G, ep_seed, env,
             )
-            ca_base, _ = _run_episode_with_injection(
-                model, device, None, None, None, None,
-                None, max_steps, probe_step, G, ep_seed, env,
+            ca_base = _run_episode_with_injection(
+                model, device, None,     max_steps, probe_step, G, ep_seed, env,
             )
-            ca_rand, _ = _run_episode_with_injection(
-                model, device, None, None, None, None,
-                W_rand, max_steps, probe_step, G, ep_seed, env,
+            ca_rand = _run_episode_with_injection(
+                model, device, W_rand,   max_steps, probe_step, G, ep_seed, env,
             )
 
-            counts_tgt[ca_tgt + 1]  += 1
+            counts_tgt[ca_tgt + 1]   += 1
             counts_base[ca_base + 1] += 1
             counts_rand[ca_rand + 1] += 1
             n_valid += 1
@@ -399,16 +410,21 @@ def run_interventions(
 
 
 # ── E. Time-of-emergence ───────────────────────────────────────────────
-def run_emergence(cells, intents, probe_steps, log_step=None):
-    """Probe macro F1 at each probe step to see when representation emerges."""
+def run_emergence(cells, step_intents, probe_steps, log_step=None):
+    """Probe macro F1 at each probe step to see when representation emerges.
+
+    Uses per-step intents so steps with fewer surviving episodes don't
+    cause a length mismatch against the global intent array.
+    """
     print(f"\n[EMERGENCE]  probe steps: {probe_steps}")
     f1s = {}
     for s in sorted(probe_steps):
         X = cells.get(s, np.zeros((0, 1)))
-        if len(X) < 10:
+        y = step_intents.get(s, np.zeros(0, dtype=np.int32))
+        if len(X) < 10 or len(y) != len(X):
             print(f"  step {s}: too few samples ({len(X)}) — skipping")
             continue
-        _, f1, _, _ = _probe(X, intents, seed=s)
+        _, f1, _, _ = _probe(X, y, seed=s)
         f1s[s] = f1
         print(f"  step {s}: macro F1 = {f1:.4f}")
 
@@ -488,17 +504,18 @@ def main():
         tr = np.load(args.traces_file)
         cells = {int(k.replace("cell_s", "")): tr[k] for k in tr.files
                  if k.startswith("cell_s")}
-        intents    = tr["partner_intents"]
+        intents     = tr["partner_intents"]
         corridors_a = tr["corridors_a"]
         corridors_b = np.zeros_like(corridors_a) - 1
-        # traces don't contain full hidden states — interventions will re-run
+        # for traces, all available steps share the same intent array
+        step_intents = {s: intents for s in cells}
         hs_at_probe = {s: [] for s in probe_steps}
         cs_at_probe = {s: [] for s in probe_steps}
         obs_at_probe = {s: [] for s in probe_steps}
         goa_at_probe = {s: [] for s in probe_steps}
     else:
         print(f"Collecting {args.num_rollouts} rollouts (probe steps {probe_steps})...")
-        (cells, intents, corridors_a, corridors_b,
+        (cells, step_intents, intents, corridors_a, corridors_b,
          hs_at_probe, cs_at_probe, obs_at_probe, goa_at_probe, _G) = collect_rollouts(
             model, device, args.num_rollouts, args.max_steps, probe_steps,
             mask_partner=False, seed=args.seed,
@@ -548,6 +565,7 @@ def main():
         run_interventions(
             model, device, G,
             clf=clf_main,
+            cells=cells,
             probe_step=args.probe_step,
             n_trials=args.n_intervention_trials,
             scale=args.inject_scale,
@@ -559,7 +577,7 @@ def main():
 
     # ── E. Time-of-emergence ─────────────────────────────────────────
     if do("emergence"):
-        run_emergence(cells, intents, probe_steps=probe_steps, log_step=gstep)
+        run_emergence(cells, step_intents, probe_steps=probe_steps, log_step=gstep)
         gstep += 1
 
     wandb.finish()
