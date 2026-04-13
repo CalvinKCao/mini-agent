@@ -269,18 +269,19 @@ def run_neg_control(cells, intents, probe_step, n_shuffles=5, seed=0, log_step=N
 
 # ── D. Corridor-specific causal interventions ──────────────────────────
 def _run_episode_with_injection(model, device, inject_arr, max_steps,
-                                 inject_step, G, env_state_seed, env):
+                                 inject_step, env_state_seed, env):
     """Re-run one episode from scratch; at inject_step add inject_arr to c^D.
 
-    Uses stochastic action sampling so logit shifts from the injection show
-    up in the corridor-choice distribution over many trials.
-
-    Returns corridor_committed for agent A (-1 if episode ended uncommitted).
+    Returns (corridor_committed_a, logits_at_inject or None).
+    corridor_committed_a is -1 if the episode ended before the agent entered row 2.
+    logits_at_inject are the RAW logits (before sampling) right at inject_step, for both
+    the injected and baseline calls — useful for direct distribution comparison.
     """
     env.rng = np.random.default_rng(env_state_seed)
     obs_np, goal_np = env.reset()
     h, c = model.initial_state(2, device=device)
     corridor_a = -1
+    logits_out = None
 
     for s in range(max_steps + 1):
         obs_t  = torch.from_numpy(obs_np).reshape(2, 3, GRID_H, GRID_W).to(device)
@@ -294,7 +295,10 @@ def _run_episode_with_injection(model, device, inject_arr, max_steps,
             logits, _, h, c = model.forward_logits(obs_t, goal_t, h, c,
                                                     inject_cell_top=inject)
 
-        # stochastic sampling — lets logit shifts show up in the distribution
+        if s == inject_step:
+            logits_out = logits[0].cpu()   # agent A logits at injection moment
+
+        # stochastic sampling — lets logit shifts show up in corridor-choice distribution
         acts = torch.distributions.Categorical(logits=logits).sample().cpu().numpy()
         obs_np, goal_np, _, done, info = env.step(acts.reshape(1, 2))
         if done[0]:
@@ -303,64 +307,71 @@ def _run_episode_with_injection(model, device, inject_arr, max_steps,
 
     if corridor_a == -1:
         corridor_a = int(env.corridor_committed[0, 0])
-    return corridor_a
+    return corridor_a, logits_out
 
 
 def run_interventions(
     model, device, G,
-    clf,                         # fitted probe
-    cells,                       # dict {step: (N, feat)} — used for adaptive scaling
+    clf,
+    cells,
     probe_step,
+    intervention_step,           # where to inject (can differ from probe_step)
     n_trials=100,
     scale=1.0,
     max_steps=30,
     seed=42,
     log_step=None,
 ):
-    """For each corridor k: inject W_k, measure A's corridor choice (stochastic policy).
+    """For each corridor k: inject W_k at intervention_step, measure two things:
 
-    Tests:
-      1. Targeted injection (W_k per class) → P(A→k) should rise
-      2. Random injection of same norm      → should not rise (neg control)
+    1. Corridor-choice Δ: P(A→k | inject W_k) − P(A→k | baseline)
+       Works best when intervention_step is near typical commitment (~step 4-5).
+       The injection must survive N-tick ConvLSTM processing + subsequent steps.
 
-    Injection scale is set adaptively: W_k is rescaled so its spatial norm
-    matches the mean cell-state norm × user scale, making the perturbation
-    comparable in magnitude to the hidden state.
+    2. Immediate KL: KL(p_base ‖ p_inject) measured right at injection_step.
+       Measures instant policy shift before LSTM washes it out over time.
+       This is the cleaner signal when corridor-choice Δ is noisy.
+
+    Injection scale: W_k = unit-normed coef_[k] × mean_c_norm(at probe_step) × scale.
+    scale=1.0 → ||inject|| = ||c^D||_mean (same-norm perturbation).
+
+    Random control: same norm as W_k, random direction.
     """
     rng = np.random.default_rng(seed)
     env = ThreeCorridorVec(num_envs=1, max_steps=max_steps, seed=seed + 5000)
 
-    # concept vectors: coef_[k] is (feat_dim,) in OvR logistic regression
-    W = clf.coef_.astype(np.float32)         # (N_CORRIDORS, feat_dim)
-    W_norms = np.linalg.norm(W, axis=1) + 1e-9  # (N_CORRIDORS,)
+    W = clf.coef_.astype(np.float32)
+    W_norms = np.linalg.norm(W, axis=1) + 1e-9
 
-    # adaptive base: mean ||c^D|| over collected rollouts at probe_step
     X = cells.get(probe_step, np.zeros((0, G * GRID_H * GRID_W)))
-    if len(X) > 0:
-        mean_c_norm = float(np.linalg.norm(X, axis=1).mean())
-    else:
-        mean_c_norm = 1.0
-    print(f"\n[INTERVENTION @ step {probe_step}]  "
-          f"inject_scale={scale}  mean_c_norm={mean_c_norm:.3f}  "
-          f"||W_k|| (raw) ≈ {W_norms.mean():.4f}")
+    mean_c_norm = float(np.linalg.norm(X, axis=1).mean()) if len(X) > 0 else 1.0
+
+    X_iv = cells.get(intervention_step, X)
+    mean_c_iv = float(np.linalg.norm(X_iv, axis=1).mean()) if len(X_iv) > 0 else mean_c_norm
+
+    inject_norm = mean_c_norm * scale
+    print(f"\n[INTERVENTION  inject_step={intervention_step}  probe_step={probe_step}]")
+    print(f"  scale={scale}  ||c^D||_mean@probe={mean_c_norm:.2f}  "
+          f"||c^D||_mean@inject={mean_c_iv:.2f}  ||W_k||_raw≈{W_norms.mean():.4f}  "
+          f"||inject||={inject_norm:.2f}  "
+          f"ratio={inject_norm/mean_c_iv:.2f}×c_iv")
 
     table_rows = []
 
     for k_tgt in range(N_CORRIDORS):
-        # scale W_k so it has the same norm as the mean cell state × user scale
-        W_k = (W[k_tgt] / W_norms[k_tgt]) * mean_c_norm * scale
+        W_k = (W[k_tgt] / W_norms[k_tgt]) * inject_norm
         W_inject = np.zeros((2, G, GRID_H, GRID_W), dtype=np.float32)
         W_inject[0] = W_k.reshape(G, GRID_H, GRID_W)
 
-        # random control: same norm, random direction
         rnd = rng.standard_normal(W_inject[0].shape).astype(np.float32)
         rnd *= np.linalg.norm(W_inject[0]) / (np.linalg.norm(rnd) + 1e-9)
         W_rand = np.zeros_like(W_inject)
         W_rand[0] = rnd
 
-        counts_tgt  = np.zeros(N_CORRIDORS + 1, dtype=np.int32)  # idx 0-2 + -1 slot
+        counts_tgt  = np.zeros(N_CORRIDORS + 1, dtype=np.int32)
         counts_base = np.zeros(N_CORRIDORS + 1, dtype=np.int32)
         counts_rand = np.zeros(N_CORRIDORS + 1, dtype=np.int32)
+        kl_tgt_list, kl_rand_list = [], []
         n_valid = 0
 
         for _trial in range(n_trials * 4):
@@ -369,44 +380,63 @@ def run_interventions(
             ep_seed = int(rng.integers(1 << 30))
             env.rng = np.random.default_rng(ep_seed)
             obs_np, goal_np = env.reset()
-            # counterfactual condition: B's true intent ≠ injected intent
             if int(env.goals[0, 1]) == k_tgt:
                 continue
 
-            ca_tgt  = _run_episode_with_injection(
-                model, device, W_inject, max_steps, probe_step, G, ep_seed, env,
+            ca_tgt,  lg_tgt  = _run_episode_with_injection(
+                model, device, W_inject, max_steps, intervention_step, ep_seed, env,
             )
-            ca_base = _run_episode_with_injection(
-                model, device, None,     max_steps, probe_step, G, ep_seed, env,
+            ca_base, lg_base = _run_episode_with_injection(
+                model, device, None,     max_steps, intervention_step, ep_seed, env,
             )
-            ca_rand = _run_episode_with_injection(
-                model, device, W_rand,   max_steps, probe_step, G, ep_seed, env,
+            ca_rand, lg_rand = _run_episode_with_injection(
+                model, device, W_rand,   max_steps, intervention_step, ep_seed, env,
             )
 
             counts_tgt[ca_tgt + 1]   += 1
             counts_base[ca_base + 1] += 1
             counts_rand[ca_rand + 1] += 1
+
+            if lg_base is not None and lg_tgt is not None:
+                p_b = F.softmax(lg_base, dim=-1)
+                p_t = F.softmax(lg_tgt,  dim=-1)
+                kl_tgt_list.append(float((p_b * (p_b.log() - p_t.log())).sum()))
+                if lg_rand is not None:
+                    p_r = F.softmax(lg_rand, dim=-1)
+                    kl_rand_list.append(float((p_b * (p_b.log() - p_r.log())).sum()))
+
             n_valid += 1
 
-        p_tgt_tgt  = counts_tgt[k_tgt + 1]  / max(n_valid, 1)
-        p_base_tgt = counts_base[k_tgt + 1] / max(n_valid, 1)
-        p_rand_tgt = counts_rand[k_tgt + 1] / max(n_valid, 1)
-        delta      = p_tgt_tgt - p_base_tgt
+        p_k_tgt  = counts_tgt[k_tgt + 1]  / max(n_valid, 1)
+        p_k_base = counts_base[k_tgt + 1] / max(n_valid, 1)
+        p_k_rand = counts_rand[k_tgt + 1] / max(n_valid, 1)
+        delta    = p_k_tgt - p_k_base
+        mean_kl  = float(np.mean(kl_tgt_list))  if kl_tgt_list  else float("nan")
+        mean_klr = float(np.mean(kl_rand_list)) if kl_rand_list else float("nan")
 
-        row = [CORRIDOR_NAMES[k_tgt], f"{p_base_tgt:.3f}", f"{p_tgt_tgt:.3f}",
-               f"{p_rand_tgt:.3f}", f"{delta:+.3f}", n_valid]
+        row = [CORRIDOR_NAMES[k_tgt], f"{p_k_base:.3f}", f"{p_k_tgt:.3f}",
+               f"{p_k_rand:.3f}", f"{delta:+.3f}", f"{mean_kl:.4f}",
+               f"{mean_klr:.4f}", n_valid]
         table_rows.append(row)
         print(f"  inject→{CORRIDOR_NAMES[k_tgt]:6s}: "
-              f"base={p_base_tgt:.3f}  injected={p_tgt_tgt:.3f}  "
-              f"random={p_rand_tgt:.3f}  Δ={delta:+.3f}  (n={n_valid})")
+              f"base={p_k_base:.3f}  injected={p_k_tgt:.3f}  rand={p_k_rand:.3f}  "
+              f"Δ_corridor={delta:+.3f}  KL_imm(tgt)={mean_kl:.4f}  "
+              f"KL_imm(rand)={mean_klr:.4f}  (n={n_valid})")
 
     if log_step is not None:
         tbl = wandb.Table(
             columns=["inject_corridor", "P(A=k|base)", "P(A=k|inject_Wk)",
-                     "P(A=k|rand)", "delta", "n_trials"],
+                     "P(A=k|rand)", "delta_corridor", "KL_imm_tgt", "KL_imm_rand",
+                     "n_trials"],
             data=table_rows,
         )
-        wandb.log({"intervention/corridor_table": tbl}, step=log_step)
+        wandb.log({
+            "intervention/corridor_table": tbl,
+            "intervention/inject_step":    intervention_step,
+            "intervention/scale":          scale,
+            "intervention/inject_norm":    inject_norm,
+            "intervention/c_norm_at_inject": mean_c_iv,
+        }, step=log_step)
 
 
 # ── E. Time-of-emergence ───────────────────────────────────────────────
@@ -467,6 +497,8 @@ def main():
                    help="primary probe timestep (default 2)")
     p.add_argument("--max-steps",    type=int, default=30)
     p.add_argument("--inject-scale", type=float, default=1.0)
+    p.add_argument("--intervention-step", type=int, default=None,
+                   help="step at which to inject concept vector (default: probe-step+2)")
     p.add_argument("--n-intervention-trials", type=int, default=150)
     p.add_argument("--seed",         type=int, default=42)
     p.add_argument("--device",       type=str, default="cuda")
@@ -557,16 +589,20 @@ def main():
 
     # ── D. Corridor-specific interventions ───────────────────────────
     if do("intervention"):
-        # need a probe for concept vectors
         if clf_main is None:
             clf_main, _ = run_probe(
                 cells, intents, probe_step=args.probe_step, step=None, log=False,
             )
+        # default injection step = probe_step + 2 (stronger representation, closer to fork)
+        iv_step = args.intervention_step
+        if iv_step is None:
+            iv_step = min(args.probe_step + 2, max(probe_steps))
         run_interventions(
             model, device, G,
             clf=clf_main,
             cells=cells,
             probe_step=args.probe_step,
+            intervention_step=iv_step,
             n_trials=args.n_intervention_trials,
             scale=args.inject_scale,
             max_steps=args.max_steps,
