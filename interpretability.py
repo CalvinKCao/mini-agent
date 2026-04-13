@@ -558,14 +558,17 @@ def main():
     gstep = 0
     do = lambda mode: args.mode in ("all", mode)
 
+    # intents for the primary probe step — always same length as cells[probe_step]
+    probe_intents = step_intents.get(args.probe_step, intents)
+
     # ── A. Probe ──────────────────────────────────────────────────────
     clf_main = None
+    f1_main  = 0.0
     if do("probe"):
         clf_main, f1_main = run_probe(
-            cells, intents, probe_step=args.probe_step, step=gstep, log=True,
+            cells, probe_intents, probe_step=args.probe_step, step=gstep, log=True,
         )
-        # held-out generalization
-        run_held_out(cells, intents, probe_step=args.probe_step, log_step=gstep)
+        run_held_out(cells, probe_intents, probe_step=args.probe_step, log_step=gstep)
         gstep += 1
 
     # ── B. Ablation: mask partner channel ────────────────────────────
@@ -583,7 +586,7 @@ def main():
 
     # ── C. Negative controls ─────────────────────────────────────────
     if do("negcontrol"):
-        run_neg_control(cells, intents, args.probe_step, n_shuffles=5,
+        run_neg_control(cells, probe_intents, args.probe_step, n_shuffles=5,
                         seed=args.seed, log_step=gstep)
         gstep += 1
 
@@ -591,7 +594,7 @@ def main():
     if do("intervention"):
         if clf_main is None:
             clf_main, _ = run_probe(
-                cells, intents, probe_step=args.probe_step, step=None, log=False,
+                cells, probe_intents, probe_step=args.probe_step, step=None, log=False,
             )
         # default injection step = probe_step + 2 (stronger representation, closer to fork)
         iv_step = args.intervention_step
