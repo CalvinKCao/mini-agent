@@ -525,11 +525,21 @@ def main():
         config={**vars(args), "test": "v3-interpretability"},
     )
 
-    model, G, D, N = load_model(args.checkpoint, device)
-    print(f"Loaded DRC({D},{N}) G={G} from {args.checkpoint}")
-
     # ── collect data ─────────────────────────────────────────────────
-    probe_steps = [0, 1, 2, 3, 4, 5]
+    # compute probe_steps before model load so it can be printed as a diagnostic
+    iv_step = args.intervention_step if args.intervention_step is not None \
+              else min(args.probe_step + 2, 5)
+    if args.mode in ("all", "emergence"):
+        probe_steps = [0, 1, 2, 3, 4, 5]
+    else:
+        needed = {args.probe_step}
+        if args.mode in ("all", "intervention"):
+            needed.add(iv_step)
+        probe_steps = sorted(needed)
+
+    print(f"Loading model from {args.checkpoint} onto {device} ...", flush=True)
+    model, G, D, N = load_model(args.checkpoint, device)
+    print(f"Loaded DRC({D},{N}) G={G}  probe_steps={probe_steps}", flush=True)
 
     if args.traces_file and os.path.isfile(args.traces_file):
         print(f"Loading traces from {args.traces_file}")
@@ -546,14 +556,15 @@ def main():
         obs_at_probe = {s: [] for s in probe_steps}
         goa_at_probe = {s: [] for s in probe_steps}
     else:
-        print(f"Collecting {args.num_rollouts} rollouts (probe steps {probe_steps})...")
+        print(f"Collecting {args.num_rollouts} rollouts (probe steps {probe_steps})...",
+              flush=True)
         (cells, step_intents, intents, corridors_a, corridors_b,
          hs_at_probe, cs_at_probe, obs_at_probe, goa_at_probe, _G) = collect_rollouts(
             model, device, args.num_rollouts, args.max_steps, probe_steps,
             mask_partner=False, seed=args.seed,
         )
         print(f"  collected: {len(intents)}  "
-              f"A committed: {(corridors_a >= 0).sum()}/{len(corridors_a)}")
+              f"A committed: {(corridors_a >= 0).sum()}/{len(corridors_a)}", flush=True)
 
     gstep = 0
     do = lambda mode: args.mode in ("all", mode)

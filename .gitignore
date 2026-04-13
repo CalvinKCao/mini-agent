@@ -1,38 +1,3 @@
-# lnai-generated
-# (slidev reference bundle is huge; keep skill entrypoints only)
-.ai/skills/slidev/references/
-.agents/skills/alliancecan
-.agents/skills/messy
-.agents/skills/natural
-.agents/skills/quick
-.agents/skills/slidev
-.ai/.lnai-manifest.json
-.claude/CLAUDE.md
-.claude/skills/slidev
-.cursor/skills/alliancecan
-.cursor/skills/messy
-.cursor/skills/natural
-.cursor/skills/quick
-.cursor/skills/slidev
-.gemini/settings.json
-.gemini/skills/alliancecan
-.gemini/skills/messy
-.gemini/skills/natural
-.gemini/skills/quick
-.gemini/skills/slidev
-.github/skills/alliancecan
-.github/skills/messy
-.github/skills/natural
-.github/skills/quick
-.github/skills/slidev
-.windsurf/skills/alliancecan
-.windsurf/skills/messy
-.windsurf/skills/natural
-.windsurf/skills/quick
-.windsurf/skills/slidev
-AGENTS.md
-opencode.json
-# end lnai-generated
 
 # Python / ML
 .venv/
@@ -53,3 +18,42 @@ logs/
 Thumbs.db
 # Windows / WSL junk (ADS copied as files)
 *Zone.Identifier*
+
+# lnai-generated
+.agents/skills/alliancecan
+.agents/skills/audio_math_explainer
+.agents/skills/messy
+.agents/skills/natural
+.agents/skills/quick
+.agents/skills/slidev
+.ai/.lnai-manifest.json
+.claude/CLAUDE.md
+.claude/skills/slidev
+.cursor/skills/alliancecan
+.cursor/skills/audio_math_explainer
+.cursor/skills/messy
+.cursor/skills/natural
+.cursor/skills/quick
+.cursor/skills/slidev
+.gemini/settings.json
+.gemini/skills/alliancecan
+.gemini/skills/audio_math_explainer
+.gemini/skills/messy
+.gemini/skills/natural
+.gemini/skills/quick
+.gemini/skills/slidev
+.github/skills/alliancecan
+.github/skills/audio_math_explainer
+.github/skills/messy
+.github/skills/natural
+.github/skills/quick
+.github/skills/slidev
+.windsurf/skills/alliancecan
+.windsurf/skills/audio_math_explainer
+.windsurf/skills/messy
+.windsurf/skills/natural
+.windsurf/skills/quick
+.windsurf/skills/slidev
+AGENTS.md
+opencode.json
+# end lnai-generated

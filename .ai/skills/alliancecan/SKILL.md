@@ -96,10 +96,10 @@ Only use `$SCRATCH/$USER/<repo>` if **your site documentation** says scratch is 
 
 - **HOME (`~`):** Small quota; keep **source, job scripts, tiny configs**. Not for large datasets or heavy I/O.
 - **SCRATCH:** Large, fast for big sequential I/O; **not backed up**; old files may be **purged** (e.g. 60-day policy—check current docs). Use for **checkpoints during runs**, bulk output, datasets you can re-fetch, and **clone/run the repo** where policy requires (Killarney: **no GPU work from `/home`** — run from `$SCRATCH/...`).
-- **PROJECT (`$PROJECT` / `~/projects/...`):** Shared by the allocation group, larger quota, backed up; intended for **relatively static** shared data—frequent churn hurts tape backup. For **your** artifacts, use a **per-user subdirectory**: `$PROJECT/$USER/<app>/` (venv, checkpoints, wandb, copied datasets), **not** the group root as a personal scratch pad. Generally, the user prefers to never use this directory.
+- **PROJECT (`$PROJECT` / `~/projects/...`):** Shared by the allocation group, larger quota, backed up; intended for **relatively static** shared data—frequent churn hurts tape backup. For **your** artifacts, use a **per-user subdirectory**: `$PROJECT/$USER/<app>/` (venv, checkpoints, wandb, copied datasets), **not** the group root as a personal scratch pad.
 - **`$SLURM_TMPDIR`:** Per-job local disk on the compute node; great for **many small files** and ephemeral shuffles; **deleted when the job ends**.
 - **Python/R packages:** Often **not** full Lmod modules; use Alliance **Python + pip/wheel** docs, or install into **your** space (venv under `$PROJECT/$USER/...` or similar).
-- **Modules:** Start job scripts by clearing the inherited stack, then load what you need; prerequisites matter—use **`module spider <name>/<version>`** to see the load chain. Avoid relying on whatever was loaded in the interactive shell. See **`module purge` vs `set -e`** below—raw `module purge` can abort the whole job.
+- **Modules:** Start job scripts with **`module purge`** then load what you need; prerequisites matter—use **`module spider <name>/<version>`** to see the load chain. Avoid relying on whatever was loaded in the interactive shell.
 
 **Per-user working space (important):** Treat **group project space as shared infrastructure**. Keep **your** working data, venvs, and experiment outputs under **`$PROJECT/$USER/...`** and/or **`$SCRATCH/$USER/...`** (only when that path is valid on your site). Do **not** stash personal experiments or venvs directly under `$PROJECT/` without a `/$USER/` (or agreed team) path—avoids quota fights and policy issues.
 
@@ -108,7 +108,7 @@ Only use `$SCRATCH/$USER/<repo>` if **your site documentation** says scratch is 
 If `$PROJECT` is empty in the batch environment:
 
 ```bash
-# Use nullglob — `ls def-*` with no matches exits 2 and breaks scripts with `set -o pipefail`.
+# Use nullglob — see Gotchas: `ls def-*` + `set -o pipefail` kills the job if globs miss.
 if [ -z "$PROJECT" ] && [ -d "$HOME/projects" ]; then
   shopt -s nullglob
   _m=("$HOME"/projects/def-* "$HOME"/projects/aip-*)
@@ -140,7 +140,7 @@ Repo comments (`slurm_pipeline.sh`): **Narval** → e.g. A100; **Fir / Nibi / Ro
 Example stack used in this repo’s Slurm scripts:
 
 ```bash
-module purge || true
+module purge || true   # || true required — exits non-zero on sticky modules
 module load StdEnv/2023
 module load python/3.11
 module load cuda/12.2
@@ -151,17 +151,49 @@ Load **CUDA/cuDNN** versions compatible with your PyTorch build. If a module fai
 
 ### `module purge` and `set -e` (common silent failure)
 
-On many Alliance nodes, **`module purge` exits non-zero** (often exit code `2`) when it cannot unload sticky modules (`CCconfig`, `gentoo`, parts of the compiler stack, etc.). It may still print *“The following modules were not unloaded”* to stderr.
+On Alliance nodes, **`module purge` exits non-zero** (often code 2) when sticky modules
+(`CCconfig`, `gentoo`, compiler stack) refuse to unload. With `set -e` or `set -euo pipefail`
+this **kills the job immediately** — only the module warning appears in `.err`, no Python
+output, `sacct` shows `FAILED ExitCode=2:0`.
 
-If the job script starts with **`set -e`** / **`set -euo pipefail`**, that non-zero status **ends the script immediately**—often in a few seconds, with **`sacct` showing `FAILED` and `ExitCode 2:0`**, and **little or nothing in the `.out` file** because Python never ran.
+**Always write `module purge || true`**, never bare `module purge` in scripts using `set -e`.
 
-**Safe patterns** (pick one):
+---
 
-- After purge: **`module purge || true`** then `module load ...` (keeps `set -e` for the rest).
-- Or: **`module --force purge`** if your site documents it and you need a harder reset.
-- Or: omit `set -e` for the module block only, or run purge in a subshell.
+## Python virtual environments on compute nodes (critical)
 
-When editing Slurm scripts that use **`set -e`**, always treat **`module purge`** as potentially failing.
+**Never keep the active venv on `/scratch` or `/project` for a running job.**
+Both are parallel (Lustre/GPFS) filesystems — fast for large sequential I/O but
+**extremely slow at reading thousands of small files**. `import torch` touches hundreds of
+`.so` and `.py` files; on a cold compute node this alone can take **5–15 minutes**. A 15-
+or 20-minute smoke test times-out before a single line of user code runs.
+
+### The fix: rebuild the venv on `$SLURM_TMPDIR` at job start
+
+`$SLURM_TMPDIR` is a fast **node-local NVMe SSD** scoped to your job. Imports from there
+take seconds. Canonical Alliance Canada pattern:
+
+```bash
+virtualenv --no-download "$SLURM_TMPDIR/env"
+source "$SLURM_TMPDIR/env/bin/activate"
+pip install --no-index --upgrade pip
+
+# Heavy C-extension packages — Alliance CA pre-built wheel cache, no network needed
+pip install --no-index torch numpy scikit-learn
+
+# Packages absent from the wheel cache — small/pure-Python ones only
+pip install wandb
+```
+
+`--no-download` skips fetching a new virtualenv wheel. `--no-index` uses only the pre-built
+wheels exposed by `module load python/3.11`. Check availability: `avail_wheels <pkg>` on a
+login node. **Do not `cp -r` an existing venv** — absolute paths in activation scripts break.
+
+**Symptom of the slow-import bug:** job output has only the first few `echo` lines, then
+`TIMEOUT` in `sacct`. No Python output. Venv is on `/scratch`.
+
+**Smoke-test wall time:** even with `$SLURM_TMPDIR`, request **≥20 min** — `pip install`
+from the wheel cache takes 3–5 min; after that imports are <1 min.
 
 ## Patterns from this repository
 
@@ -173,11 +205,13 @@ When editing Slurm scripts that use **`set -e`**, always treat **`module purge`*
 
 ## Gotchas (see also project `onboard.md` and `.ai/cluster-paths.md`)
 
-- **`ls ~/projects/def-*` under `set -euo pipefail` (silent job death):** If **`~/projects` exists** but **no** `def-*` / `aip-*` match, **`ls` exits 2**. With **`pipefail`**, the pipeline fails → **`set -e` aborts the batch** in seconds. **`sacct`:** `FAILED`, **`ExitCode=2:0`**. **Fix:** `shopt -s nullglob` + array (see **Resolving `$PROJECT`**), never `ls … | head` on those globs.
+- **`ls ~/projects/def-*` under `set -euo pipefail` (silent job death):** Many job scripts use `set -euo pipefail` and then `FIRST=$(ls -d "$HOME"/projects/def-* ... 2>/dev/null | head -1)`. If **`~/projects` exists** but **no** `def-*` / `aip-*` match, **`ls` exits with status 2**. With **`pipefail`**, the pipeline fails → **`set -e` aborts the entire batch** in a few seconds. **`sacct`** shows `State=FAILED`, **`ExitCode=2:0`**, `.err` may only show `module purge` noise, `.out` stays nearly empty. **Fix:** use `shopt -s nullglob` and a bash array over the globs (see snippet above), or append `|| true` to the assignment in a way that cannot still fail the pipeline—**do not** rely on `ls` with possibly unmatched globs in a piped command.
+- **`BASH_SOURCE[0]` inside `sbatch` scripts:** Slurm copies the submitted script to a spool path like `/cm/local/apps/slurm/var/spool/job<ID>/slurm_script`, so `BASH_SOURCE[0]` points at the spool copy, not the repo checkout. Sourcing helper files relative to it will fail. **Use `SLURM_SUBMIT_DIR`** when you need repo-local helper scripts or data, and add a guard that errors out if the submit directory is missing the file.
 - **Empty/broken venv on cluster:** If jobs fail with missing `torch`, recreate or repair **`$PROJECT/$USER/.../venv`** (or delete and let the Slurm script reinstall).
 - **Imports:** Run Python as **`python -m package.module`** from the repo root.
 - **Slurm output buffering** can make logs look “stuck”; use unbuffered Python or interactive `salloc` to debug.
-- **`module purge` in jobs** clears inherited login-node modules, but on Alliance systems it often **returns exit code 2** when some modules refuse to unload—**deadly with `set -e`** (job exits before training; see **Software modules → `module purge` and `set -e`**). Prefer **`module purge || true`** in scripts that use `set -euo pipefail`.
+- **`module purge` in jobs** — always write `module purge || true`; bare `module purge` exits non-zero on sticky modules and kills the job when `set -e` is active (see Software modules section above).
+- **`sbatch --wrap` uses `/bin/sh`, not bash:** `--wrap="source ..."` fails with `source: not found` because `/bin/sh` on Alliance nodes is `dash`, which uses `.` not `source`. **Always write a proper `#!/bin/bash` script** and pass it to `sbatch` — never use `--wrap` for anything involving `source`, bash arrays, or `[[ ]]`.
 - **`sbatch` from scripts:** Do not submit thousands of jobs at once; prefer **arrays** or spacing submissions—Alliance warns this can harm Slurm.
 - **Stale script on cluster:** If `squeue` still shows H100/64G after switching to L40S, **`git pull`** on the cluster clone and **resubmit** — old `#SBATCH` lines are baked in at submit time.
 
